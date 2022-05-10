@@ -3,3 +3,10 @@
 pub fn multiply_round_down(a: f64, b: f64) -> f64 {
     return a * b;
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_cases;
+
+
+}

@@ -1,8 +1,9 @@
 use lazy_static::lazy_static;
+use crate::successor::*;
 
 lazy_static! {
-    static ref RANDOM_F64: Vec<f64> = {
-        let v = vec![
+    pub static ref RANDOM_F64: Vec<f64> = {
+        let mut v = vec![
             f64::NAN,
             f64::INFINITY,
             -f64::INFINITY,
@@ -10,8 +11,8 @@ lazy_static! {
             -0.0,
             f64::MAX,
             f64::MIN,
-            f64::POSITIVE_MAX,
-            -f64::POSITIVE_MAX
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE
         ];
 
         for exp in -1074..=1023 {
@@ -22,6 +23,6 @@ lazy_static! {
             v.push(predecessor_f64(p));
         }
 
-        p
+        v
     };
 }

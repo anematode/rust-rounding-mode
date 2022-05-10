@@ -4,4 +4,4 @@ mod modes;
 mod successor;
 
 #[cfg(test)]
-mod tests;
+mod test;
