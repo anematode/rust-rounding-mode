@@ -1,7 +1,9 @@
 mod fallback;
+mod modes;
+mod native;
 
 fn main() {
-    println!("Hello, world!");
-    println!("{}", fallback::multiply_round_up(0.0, 2.0));
+    println!("{}", 0.1 * 0.4);
+    println!("{}", native::mul_down(0.1, 0.4));
 }
 
