@@ -1,5 +1,5 @@
 [package]
-name = "rust-rounding-mode"
+name = "rounding_mode"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,3 +7,7 @@ edition = "2021"
 
 [dependencies]
 lazy_static = "1.4.0"
+
+[[example]]
+name = "multiply_round_down"
+

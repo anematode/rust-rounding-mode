@@ -24,6 +24,8 @@ fn multiply_mantissas(a: f64, b: f64) -> (u64, u64) {
         b_mant += 1 << 52;
     }
 
+    dbg!(a_mant, b_mant);
+
     let mut hi: u64;
     let mut lo: u64;
 
@@ -211,7 +213,7 @@ fn multiply_round_down_subnormal(original: f64, mul_hi: u64, mul_lo: u64) -> f64
             return original;
         }
 
-        dbg!(rem, new_mant, mul_hi, mul_lo, lo_trunc_amt);
+        dbg!(rem, new_mant, mul_hi, mul_lo, lo_trunc_amt, end_prec);
 
         if original < 0. {
             new_mant += 1;

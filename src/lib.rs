@@ -1,7 +1,7 @@
-mod fallback;
-mod native;
-mod modes;
-mod successor;
+pub mod fallback;
+pub mod native;
+pub mod modes;
+pub mod successor;
 
 #[cfg(test)]
-mod test_cases;
+pub mod test_cases;
