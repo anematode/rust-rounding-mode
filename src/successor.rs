@@ -143,19 +143,19 @@ pub fn identical_f32(a: f32, b: f32) -> bool {
 /// placed if appropriate, and is guaranteed to be in the range [2^53, 2^54 - 1].
 pub fn sign_exp_mant_f64(a: f64) -> (u64, i32, u64) {
     let bits = a.to_bits();
-    let exp = ((bits & 0x3ff8_0000_0000_0000) >> 52) as i32 - 1023; // bias denier
+    let exp = ((bits & 0x7ff0_0000_0000_0000) >> 52) as i32 - 1023; // bias denier
     let sign = bits & (1u64 << 63);
-    let mut mant = (bits & 0x0007_ffff_ffff_ffff);
+    let mut mant = (bits & 0x000f_ffff_ffff_ffff);
 
-    if exp >= -1023 {
+    if exp >= -1022 {
     (
         sign,
         exp,
-        mant + (1 << 53) // implicit upper bit
+        mant + (1 << 52) // implicit upper bit
     )
     } else {
         let lz = mant.leading_zeros() as i32;
-        let exp = -1023 - lz + 12; // bias denier
+        let exp = -1022 - lz + 12; // bias denier
 
         mant <<= lz - 12;
 
@@ -172,12 +172,13 @@ pub fn sign_exp_mant_f64(a: f64) -> (u64, i32, u64) {
 pub fn from_sign_exp_mant_f64(sign: u64, mut exp: i32, mut mant: u64) -> f64 {
     if exp <= -1023 {
         // denormal enjoyer
-        mant >>= -1023 - exp;
-        exp = -1022;
+        exp = -1023;
     }
 
-    let exp = (exp + 1023) as u64; // bias enjoyer
+    let exp = ((exp + 1023) as u64) << 52; // bias enjoyer
     let bits = sign + exp + mant;
 
     f64::from_bits(bits)
 }
+
+pub const MIN_SUBNORMAL_F64: f64 = 4.940656458412465442e-324;

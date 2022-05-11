@@ -36,8 +36,11 @@ lazy_static! {
             let p = f64::powf(2.0, exp as f64);
 
             v.push(p);
+            v.push(-p);
             v.push(successor_f64(p));
+            v.push(-successor_f64(p));
             v.push(predecessor_f64(p));
+            v.push(-predecessor_f64(p));
         }
 
         v
