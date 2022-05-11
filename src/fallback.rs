@@ -69,14 +69,14 @@ pub fn multiply_round_down(a: f64, b: f64) -> f64 {
     let (mul_hi, mul_lo) = multiply_mantissas(a, b);
 
     // It is possible for mul_hi to be zero (tiny subnormal multiplied with a large number), but
-    // together there will always be at least 53 bits of stuff, because all subnormals were dealt
-    // with at original == 0.0.
+    // together there will always be at least 53 bits of stuff, because all pairs of subnormals were
+    // dealt with at original == 0.0.
 
     // We now adjust the standard result based on what it "should" be based on the rounding
-    let original_m = original.to_bits() & MANTISSA_MASK;
-
     
     if original.to_bits() & EXP_MASK != 0x0 {
+        let original_m = original.to_bits() & MANTISSA_MASK;
+
         // Normal results, although it is conceivable that the answer rounded down is just barely
         // subnormal
 
@@ -101,10 +101,14 @@ pub fn multiply_round_down(a: f64, b: f64) -> f64 {
         let trunc_mask = (1u64 << lo_trunc_len) - 1;
         let trunc = mul_lo & trunc_mask;
 
-
         if trunc == 0 {
-            // Original is correct, since the exact result only has 53 bits at all
-            return native::mul_down(a,b);
+            // Original is likely correct, since the exact result only has 53 bits at all. There
+            // is a tricky edge case, though: when original is the minimum positive normal, we
+            // *could* be off by one. In this case, we check the entire sequence for being a power 
+            // of two, in which case the original is correct; otherwise, we round down.
+            return if original == f64::MIN_POSITIVE && (mul_hi.count_ones() + mul_lo.count_ones() != 1) {
+                round_down_quick(original)
+            } else { original };
         }
 
         // lo_trunc_len is now necessarily positive
@@ -140,10 +144,91 @@ pub fn multiply_round_down(a: f64, b: f64) -> f64 {
             return round_down_quick(original);
         }
     } else {
-        // Subnormal results are trickier, since the place of rounding is indeterminate. We defer
+        // Subnormal results are trickier, since the place of rounding is hard to find. We defer
         // their processing to a separate function to deter inlining.
-        return native::mul_down(a, b);
+        multiply_round_down_subnormal(original, mul_hi, mul_lo)
     }
+}
+
+/// Handler for the case where the product is subnormal. Original is thus assumed to be subnormal
+fn multiply_round_down_subnormal(original: f64, mul_hi: u64, mul_lo: u64) -> f64 {
+    let original_m = original.to_bits() & MANTISSA_MASK;
+
+    // Essentially, we calculate how many bits of accuracy the output has, then grab that many bits
+    // from the exact calculation
+
+    // The subnormal float has this many bits of precision 
+    let end_prec = 64 - original_m.leading_zeros();
+
+    // Beginning in the exact result
+    let mut lz = mul_hi.leading_zeros();
+    if lz == 64 {
+        lz += mul_lo.leading_zeros();
+    }
+
+    let mut new_mant = 0u64;
+
+    let mut end = lz + end_prec;
+    if end < 64 {
+        dbg!("Hi");
+        // end of precision occurs within the first word
+        let trunc_amt = 64 - end;
+
+        new_mant = (mul_hi >> trunc_amt);
+        let rem = mul_hi - (new_mant << trunc_amt);
+
+        if rem == 0 {
+            // exact
+            return original;
+        }
+
+        if original < 0. {
+            new_mant += 1;
+        }
+    } else if end == 64 {
+        dbg!("Hi");
+        new_mant = mul_hi;
+
+        if mul_lo == 0 {
+            // exact
+            return original;
+        }
+
+        if original < 0. {
+            new_mant += 1;
+        }
+    } else {
+
+        dbg!("Fod");
+        // occurs within the second word
+        let lo_trunc_amt = 128 - end;
+        new_mant = mul_lo >> lo_trunc_amt;
+        let rem = mul_lo - (new_mant << lo_trunc_amt);
+        new_mant += mul_hi << (end - 64); 
+
+        if rem == 0 {
+            // exact
+            return original;
+        }
+
+        dbg!(rem, new_mant, mul_hi, mul_lo, lo_trunc_amt);
+
+        if original < 0. {
+            new_mant += 1;
+        }
+    }
+
+    if new_mant == 0x1 && (mul_hi.count_ones() + mul_lo.count_ones() != 1) {
+        // Annoying edge case where the precision is "fake" in the sense that the rounded down
+        // result is actually just 0. We detect this case with a popcount. The reason that the
+        // popcount works is because of the range of relevant numbers
+    
+        new_mant = 0;
+    }
+
+    // With this scheme, a mantissa of 1 << 52 is implicitly taken to the maximum negative
+    // normal number :P
+    return f64::from_bits(new_mant).copysign(original);
 }
 
 #[cfg(test)]
@@ -159,6 +244,7 @@ mod tests {
     /// Compare the behavior of two functions, throwing a bunch of random cases at them, ensuring
     /// they behave identically.
     fn compare_binary_f64_impl(expected: Binary64Fn, actual: Binary64Fn) {
+        let mut cases = 0u64;
         for i in 0..RANDOM_F64.len() {
             for j in 0..RANDOM_F64.len() {
                 let op1 = RANDOM_F64[i];
@@ -168,8 +254,11 @@ mod tests {
                 let a = actual(op1, op2);
 
                 assert!(identical_f64(e, a), "a = {:.18e}, b = {:.18e}, expected = {:.18e}, actual = {:.18e}", op1, op2, e, a);
+                cases += 1;
             }
         }
+
+        println!("Tested {} cases", cases);
     }
 
     #[test]

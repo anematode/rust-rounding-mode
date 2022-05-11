@@ -43,6 +43,7 @@ pub fn get_rounding_mode() -> Round {
 fn ensure_state_restored() {
     match get_rounding_mode() {
         Round::TiesToEven => {
+
         },
         _ => {
             panic!("Failed to restore round-to-nearest rounding");
