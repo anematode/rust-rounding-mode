@@ -127,3 +127,57 @@ pub fn predecessor_f64(f: f64) -> f64 {
     };
     f64::from_bits(next_bits)
 }
+
+/// Returns whether two floating-point numbers have precisely the same bit pattern
+pub fn identical_f64(a: f64, b: f64) -> bool {
+    a.to_bits() == b.to_bits()
+}
+
+/// Returns whether two floating-point numbers have precisely the same bit pattern
+pub fn identical_f32(a: f32, b: f32) -> bool {
+    a.to_bits() == b.to_bits()
+}
+
+/// Mask out a float's various parts, for non-zero finite numbers only. Exponent is
+/// unbiased. Sign is stored as a 64 bit integer. Mantissa has a leading one
+/// placed if appropriate, and is guaranteed to be in the range [2^53, 2^54 - 1].
+pub fn sign_exp_mant_f64(a: f64) -> (u64, i32, u64) {
+    let bits = a.to_bits();
+    let exp = ((bits & 0x3ff8_0000_0000_0000) >> 52) as i32 - 1023; // bias denier
+    let sign = bits & (1u64 << 63);
+    let mut mant = (bits & 0x0007_ffff_ffff_ffff);
+
+    if exp >= -1023 {
+    (
+        sign,
+        exp,
+        mant + (1 << 53) // implicit upper bit
+    )
+    } else {
+        let lz = mant.leading_zeros() as i32;
+        let exp = -1023 - lz + 12; // bias denier
+
+        mant <<= lz - 12;
+
+        (
+            sign,
+            exp, 
+            mant
+        )
+    }
+}
+
+/// This function assumes the mantissa has exactly 53 bits of precision (i.e., it is between 2^53
+/// and 2^54 - 1), and that it is nonzero
+pub fn from_sign_exp_mant_f64(sign: u64, mut exp: i32, mut mant: u64) -> f64 {
+    if exp <= -1023 {
+        // denormal enjoyer
+        mant >>= -1023 - exp;
+        exp = -1022;
+    }
+
+    let exp = (exp + 1023) as u64; // bias enjoyer
+    let bits = sign + exp + mant;
+
+    f64::from_bits(bits)
+}
