@@ -1,201 +1,149 @@
 use crate::successor::*;
 use std::arch::asm;
+use crate::native;
+
+const MANTISSA_MASK: u64 = 0x000f_ffff_ffff_ffff;
+const EXP_MASK: u64 = 0x7ff0_0000_0000_0000;
+const SIGN_MASK: u64 = 0x8000_0000_0000_0000;
 
 /// Multiply two floats, returning the new exponent (as a bit pattern) and the exact mantissa as
-/// a 128-bit integer, which will be chopped as appropriate. Should only be provided with non-zero,
-/// finite numbers.
-fn multiply_repr(a: f64, b: f64) -> (u64, i32, u64, u64) {
-    let (a_sign, a_exp, a_mant) = sign_exp_mant_f64(a);
-    let (b_sign, b_exp, b_mant) = sign_exp_mant_f64(b);
+/// a 128-bit integer, which will be chopped as appropriate. Assumed to be nonzero.
+fn multiply_mantissas(a: f64, b: f64) -> (u64, u64) {
+    let a = a.to_bits();
+    let b = b.to_bits();
 
-    let sign = a_sign ^ b_sign;
-    let exp = a_exp + b_exp; 
+    let mut a_mant = a & MANTISSA_MASK;
+    let mut b_mant = b & MANTISSA_MASK;
+
+    // subnormal shenanigans
+    if a & EXP_MASK != 0x0 {
+        a_mant += 1 << 52;
+    }
+
+    if b & EXP_MASK != 0x0 {
+        b_mant += 1 << 52;
+    }
 
     let mut hi: u64;
     let mut lo: u64;
 
     unsafe {
-        // 64-bit unsigned multiplication into 128 bits
+        // 64-bit unsigned multiplication into 128 bits. If there's an intrinsic for this I'd love
+        // to know...
         asm!(
             "mul {}",
             in(reg) a_mant,
             inlateout("rax") b_mant => lo,
-            lateout("rdx") hi
+            lateout("rdx") hi,
+            options(nomem, nostack, pure)
         );
     }
 
-    dbg!(a_exp, b_exp, sign, exp, hi, lo);
-    (sign, exp, hi, lo)
+    (hi, lo)
 }
 
-const fn generate_mask(cnt: i32) -> u64 {
-    if cnt == 0 {
-        0x0
+fn round_down_quick(f: f64) -> f64 {
+    // Using an and instruction allows less transferring between xmm and general registers
+    if f.to_bits() & SIGN_MASK == 0 {
+        // positive
+        f64::from_bits(f.to_bits() - 1)
     } else {
-        0xffff_ffff_ffff_ffff >> (64 - cnt)
+        f64::from_bits(f.to_bits() + 1)
     }
 }
-
-#[derive(PartialEq)]
-enum NormalizeMode {
-    TIES_EVEN,
-    TIES_ODD,
-    TIES_AWAY,
-    TIES_ZERO,
-    TRUNC,
-    AWAY
-}
-
-/// We extract 53 bits into a u64 and round them accordingly, and return the appropriate shift
-fn round_normalize_hilo(hi: u64, lo: u64, mode: &NormalizeMode) -> (u64, i32) {
-    let mut new_mant: u64;
-    let mut shift: i32;
-    let mut trailing_behavior = 0i32; // 0 if zero, 1 if <1/2, 2 if tie, 3 if >1/2
-
-    if hi != 64 {
-        let hilz = hi.leading_zeros() as i32;
-        shift = hilz - 64 - 11;
-
-        let hi_shift = hilz - 11;
-
-        if hi_shift < 0 {
-            dbg!("Epic");
-            new_mant = hi >> -hi_shift;
-            let residue = hi - (new_mant << hi_shift);
-
-            let tie = 1 << (-hi_shift - 1);
-
-            if residue == 0 {
-
-            } else if residue < tie {
-                trailing_behavior = 1;
-            } else if residue == tie {
-                if lo == 0 {
-                    trailing_behavior = 2;
-                } else {
-                    trailing_behavior = 3;
-                }
-            } else {
-                trailing_behavior = 3;
-            }
-
-        } else if hi_shift == 0 {
-            dbg!("Epi3c");
-            new_mant = hi;
-            
-            if lo > 0 && lo < (1 << 63) {
-                trailing_behavior = 1;
-            } else if (lo == (1 << 63)) {
-                trailing_behavior = 2;
-            } else {
-                trailing_behavior = 3;
-            }
-        } else {
-
-            dbg!("Epic5");
-            // Lower word is involved
-            new_mant = (hi << hi_shift) + (lo >> -shift);
-            let residue = lo - (lo >> -shift);
-            let tie = 1 << (-shift - 1);
-
-            if residue == 0 {
-                
-            } else if residue < tie {
-                trailing_behavior = 1;
-            } else if residue == tie {
-                trailing_behavior = 2;
-            } else {
-                trailing_behavior = 3;
-            }
-        }
-    } else {
-        // Unlikely, where high word is 0
-        
-        let lolz = lo.leading_zeros() as i32;
-        shift = lolz - 11;
-
-        if lolz >= 11 {
-            new_mant = lo << (lolz - 11);
-        } else {
-            new_mant = lo >> (11 - lolz);
-            let trailing = lo - (new_mant << (11 - lolz));
-            let tie = 1 << (10 - lolz);
-
-            if trailing == 0 {
-                
-            } else if trailing < tie {
-                trailing_behavior = 1;
-            } else if trailing == tie {
-                trailing_behavior = 2;
-            } else {
-                trailing_behavior = 3;
-            }
-        }
-    }
-
-    if mode == &NormalizeMode::TRUNC {
-        return (new_mant, shift);
-    }
-
-    new_mant += if trailing_behavior > 0 {
-        if mode == &NormalizeMode::AWAY {
-            1
-        } else {
-            if trailing_behavior == 1 {
-                0
-            } else if trailing_behavior == 3 {
-                1
-            } else {
-                // tie
-                match mode {
-                    NormalizeMode::TIES_AWAY => { 1 },
-                    NormalizeMode::TIES_ZERO => { 0 },
-                    other => {
-                        if (new_mant & 1 == 0) == (&NormalizeMode::TIES_EVEN == mode) {
-                            0
-                        } else {
-                            1
-                        }
-                    }
-                }
-            }
-        }
-    } else { 0 };
-
-    (new_mant, shift)
-}
-
-// Assumes nonzero, finite
-fn round_down_repr_to_f64(mut sign: u64, mut exp: i32, mut mul_hi: u64, mut mul_lo: u64) -> f64 {
-    // Tiny or large exp
-    if exp < -1074 {
-        return if sign == 0 { 0. } else { -MIN_SUBNORMAL_F64 }
-    }
-
-    if exp > 1023 {
-        return if sign == 0 { f64::MAX } else { -f64::INFINITY }
-    }
-
-    // Our procedure is straightforward: we count 53 bits in mul_hi/mul_lo, round, and shift
-    // appropriately.
-    let (truncated, shift) = round_normalize_hilo(mul_hi, mul_lo, if sign == 0 { &NormalizeMode::TRUNC } else { &NormalizeMode::AWAY });
-
-    dbg!(truncated, shift);
-
-    from_sign_exp_mant_f64(sign, exp + shift + 53, truncated)
-}
-
+ 
 /// Computes a rounded multiplication downward of two double-precision floating point numbers.
 pub fn multiply_round_down(a: f64, b: f64) -> f64 {
+    let original = a * b;
     if !a.is_finite() || !b.is_finite() || a == 0. || b == 0. { // Rounding mode doesn't affect
-        return a * b;
+        return original;
     }
 
-    // The strategy is fairly straightforward: we multiply two 53-bit integers into a
-    // full-precision 107-bit result
-    let (sign, exp, mul_hi, mul_lo) = multiply_repr(a, b);
+    if original == 0. {
+        return if original.is_sign_positive() { original } else { -MIN_SUBNORMAL_F64 };
+    } else if original.abs() == f64::INFINITY {
+        return if original.is_sign_positive() { f64::MAX } else { original };
+    }
 
-    round_down_repr_to_f64(sign, exp, mul_hi, mul_lo)
+    // Compute a full-precision result
+    let (mul_hi, mul_lo) = multiply_mantissas(a, b);
+
+    // It is possible for mul_hi to be zero (tiny subnormal multiplied with a large number), but
+    // together there will always be at least 53 bits of stuff, because all subnormals were dealt
+    // with at original == 0.0.
+
+    // We now adjust the standard result based on what it "should" be based on the rounding
+    let original_m = original.to_bits() & MANTISSA_MASK;
+
+    
+    if original.to_bits() & EXP_MASK != 0x0 {
+        // Normal results, although it is conceivable that the answer rounded down is just barely
+        // subnormal
+
+        // By construction, since a, b < 2^53, mul_hi < 2^106 / 2^64 = 2^42, and therefore
+        // lz >= 22, and the part of the mantissa that is rounded off lays entirely in
+        // mul_lo.
+        let mut lz = mul_hi.leading_zeros();
+
+        // Unlikely, but possible
+        if lz == 64 {
+            lz += mul_lo.leading_zeros();
+        }
+
+        //   Hi                Lo
+        // 0x000000843f ... 0x40291321
+        //  <----->             ---->
+        //   lz=23                truncated (lo_trunc_len=52)
+        //        <----------->
+        //          prec=53
+        // By construction, lo_trunc_len is always nonnegative
+        let lo_trunc_len = 128 - 53 - lz;
+        let trunc_mask = (1u64 << lo_trunc_len) - 1;
+        let trunc = mul_lo & trunc_mask;
+
+
+        if trunc == 0 {
+            // Original is correct, since the exact result only has 53 bits at all
+            return native::mul_down(a,b);
+        }
+
+        // lo_trunc_len is now necessarily positive
+        let tie = 1 << (lo_trunc_len - 1);
+
+        // The truncated portion has three relevant possibilities: below tie, tie, and above
+        // tie. Tie is the most tricky to deal with, but isn't impossible. If it is below a tie,
+        // then we know the original "incorrectly" rounded upward in magnitude. If it is above
+        // a tie, then we know the original "incorrectly" rounded downward in magnitude.
+
+        if trunc != tie {
+            if (original > 0.) == (trunc < tie) {
+                // If original is positive and we rounded downward in mag, or if original is negative
+                // and we rounded upward in mag, original is correct.
+                return original;
+            } else {
+                // We incorrectly rounded upward in value. Because original is a normal number,
+                // the issue can be rectified by either incrementing or decrementing the value
+                // as an integer.
+                return round_down_quick(original);
+            }
+        }
+
+        // There was a tie; did the original round down (correct) or up (incorrect)? We examine the
+        // bit before the end of 53-bit precision in the exact result. If it is even and the number
+        // is positive, or if it is odd and the number is negative, then it rounded down, as 
+        // desired. Otherwise, we need to round down ourselves
+        let last_bit = mul_lo & (1u64 << lo_trunc_len);
+
+        if (original > 0.) == (last_bit == 0) {
+            return original;
+        } else {
+            return round_down_quick(original);
+        }
+    } else {
+        // Subnormal results are trickier, since the place of rounding is indeterminate. We defer
+        // their processing to a separate function to deter inlining.
+        return native::mul_down(a, b);
+    }
 }
 
 #[cfg(test)]

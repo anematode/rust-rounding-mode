@@ -145,7 +145,7 @@ pub fn sign_exp_mant_f64(a: f64) -> (u64, i32, u64) {
     let bits = a.to_bits();
     let exp = ((bits & 0x7ff0_0000_0000_0000) >> 52) as i32 - 1023; // bias denier
     let sign = bits & (1u64 << 63);
-    let mut mant = (bits & 0x000f_ffff_ffff_ffff);
+    let mut mant = bits & 0x000f_ffff_ffff_ffff;
 
     if exp >= -1022 {
     (

@@ -12,8 +12,7 @@ pub fn mul_down(mut a: f64, b: f64) -> f64 {
             "ldmxcsr [rsp]",  // restore old state
             "add rsp, 8",
             a = inout(xmm_reg) a,
-            b = in(xmm_reg) b,
-            options(nomem)    // unsafe to specify no flags changes, due to sub/add instructions
+            b = in(xmm_reg) b
         );
     }
 
@@ -30,13 +29,12 @@ pub fn get_rounding_mode() -> Round {
             "ldmxcsr [rsp]",
             "mov {mxcsr}, [rsp]",
             "add rsp, 4",
-            mxcsr = out(reg) mxcsr,
-            options(nomem)
+            mxcsr = out(reg) mxcsr
         );
 
         let mode = mxcsr & 0xc00; // Brings into range of Round
         let mode: Round = ::std::mem::transmute(mode); 
-        
+
         return mode;
     }
 }
@@ -45,9 +43,10 @@ pub fn get_rounding_mode() -> Round {
 fn ensure_state_restored() {
     match get_rounding_mode() {
         Round::TiesToEven => {
-            panic!("Failed to restore round-to-nearest rounding");
         },
-        _ => {}
+        _ => {
+            panic!("Failed to restore round-to-nearest rounding");
+        }
     }
 }
 
@@ -64,14 +63,14 @@ mod tests {
     }
 
     lazy_static! {
-    static ref mul_rd_tests: Vec<BinaryTestCase> = vec![
-        BinaryTestCase {
-            op1: 0.1, op2: 0.4, res: 0.04
-        },
-        BinaryTestCase {
-            op1: -0.1, op2: 0.4, res: -0.04000000000000001 
-        }
-    ];
+        static ref mul_rd_tests: Vec<BinaryTestCase> = vec![
+            BinaryTestCase {
+                op1: 0.1, op2: 0.4, res: 0.04
+            },
+            BinaryTestCase {
+                op1: -0.1, op2: 0.4, res: -0.04000000000000001 
+            }
+        ];
     }
 
     fn same_float(a: f64, b: f64) -> bool {
