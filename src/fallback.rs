@@ -36,95 +36,153 @@ const fn generate_mask(cnt: i32) -> u64 {
     }
 }
 
+#[derive(PartialEq)]
+enum NormalizeMode {
+    TIES_EVEN,
+    TIES_ODD,
+    TIES_AWAY,
+    TIES_ZERO,
+    TRUNC,
+    AWAY
+}
+
+/// We extract 53 bits into a u64 and round them accordingly, and return the appropriate shift
+fn round_normalize_hilo(hi: u64, lo: u64, mode: &NormalizeMode) -> (u64, i32) {
+    let mut new_mant: u64;
+    let mut shift: i32;
+    let mut trailing_behavior = 0i32; // 0 if zero, 1 if <1/2, 2 if tie, 3 if >1/2
+
+    if hi != 64 {
+        let hilz = hi.leading_zeros() as i32;
+        shift = hilz - 64 - 11;
+
+        let hi_shift = hilz - 11;
+
+        if hi_shift < 0 {
+            dbg!("Epic");
+            new_mant = hi >> -hi_shift;
+            let residue = hi - (new_mant << hi_shift);
+
+            let tie = 1 << (-hi_shift - 1);
+
+            if residue == 0 {
+
+            } else if residue < tie {
+                trailing_behavior = 1;
+            } else if residue == tie {
+                if lo == 0 {
+                    trailing_behavior = 2;
+                } else {
+                    trailing_behavior = 3;
+                }
+            } else {
+                trailing_behavior = 3;
+            }
+
+        } else if hi_shift == 0 {
+            dbg!("Epi3c");
+            new_mant = hi;
+            
+            if lo > 0 && lo < (1 << 63) {
+                trailing_behavior = 1;
+            } else if (lo == (1 << 63)) {
+                trailing_behavior = 2;
+            } else {
+                trailing_behavior = 3;
+            }
+        } else {
+
+            dbg!("Epic5");
+            // Lower word is involved
+            new_mant = (hi << hi_shift) + (lo >> -shift);
+            let residue = lo - (lo >> -shift);
+            let tie = 1 << (-shift - 1);
+
+            if residue == 0 {
+                
+            } else if residue < tie {
+                trailing_behavior = 1;
+            } else if residue == tie {
+                trailing_behavior = 2;
+            } else {
+                trailing_behavior = 3;
+            }
+        }
+    } else {
+        // Unlikely, where high word is 0
+        
+        let lolz = lo.leading_zeros() as i32;
+        shift = lolz - 11;
+
+        if lolz >= 11 {
+            new_mant = lo << (lolz - 11);
+        } else {
+            new_mant = lo >> (11 - lolz);
+            let trailing = lo - (new_mant << (11 - lolz));
+            let tie = 1 << (10 - lolz);
+
+            if trailing == 0 {
+                
+            } else if trailing < tie {
+                trailing_behavior = 1;
+            } else if trailing == tie {
+                trailing_behavior = 2;
+            } else {
+                trailing_behavior = 3;
+            }
+        }
+    }
+
+    if mode == &NormalizeMode::TRUNC {
+        return (new_mant, shift);
+    }
+
+    new_mant += if trailing_behavior > 0 {
+        if mode == &NormalizeMode::AWAY {
+            1
+        } else {
+            if trailing_behavior == 1 {
+                0
+            } else if trailing_behavior == 3 {
+                1
+            } else {
+                // tie
+                match mode {
+                    NormalizeMode::TIES_AWAY => { 1 },
+                    NormalizeMode::TIES_ZERO => { 0 },
+                    other => {
+                        if (new_mant & 1 == 0) == (&NormalizeMode::TIES_EVEN == mode) {
+                            0
+                        } else {
+                            1
+                        }
+                    }
+                }
+            }
+        }
+    } else { 0 };
+
+    (new_mant, shift)
+}
+
 // Assumes nonzero, finite
-fn round_exact_repr_to_f64(mut sign: u64 ,mut exp: i32, mut mul_hi: u64, mut mul_lo: u64) -> f64 {
+fn round_down_repr_to_f64(mut sign: u64, mut exp: i32, mut mul_hi: u64, mut mul_lo: u64) -> f64 {
     // Tiny or large exp
     if exp < -1074 {
-        return if sign == 0 {
-            // Rounds to 0
-            0.
-        } else {
-            -MIN_SUBNORMAL_F64
-        }
+        return if sign == 0 { 0. } else { -MIN_SUBNORMAL_F64 }
     }
 
     if exp > 1023 {
-        return if sign == 0 {
-            f64::MAX
-        } else {
-            -f64::INFINITY
-        }
-    }
-    let mut mul_lo_cutoff = 52; // bit in mul_lo including and after which should be cut off
-
-    // We check for overflow at the 107th bit, aka the 43rd bit of mul_hi
-    let overflow = mul_hi & (1 << 41);
-    if overflow != 0 {
-        mul_lo_cutoff += 1;
-    } else {
-        exp -= 1;
+        return if sign == 0 { f64::MAX } else { -f64::INFINITY }
     }
 
-    let mut new_mant: u64;
+    // Our procedure is straightforward: we count 53 bits in mul_hi/mul_lo, round, and shift
+    // appropriately.
+    let (truncated, shift) = round_normalize_hilo(mul_hi, mul_lo, if sign == 0 { &NormalizeMode::TRUNC } else { &NormalizeMode::AWAY });
 
-    // Denormal pain
-    if exp <= -1023 - 12 {
-        let mul_hi_cutoff = -1023 - 12 - exp + (overflow != 0) as i32; // how much to chop off the HIGH part (the entire low part is discarded)
-        println!("Shit {}", mul_hi_cutoff);
+    dbg!(truncated, shift);
 
-        new_mant = mul_hi >> mul_hi_cutoff; // truncate
-        if sign != 0 {
-            let mask = generate_mask(mul_hi_cutoff);
-
-            if mul_hi & mask != 0 || mul_lo != 0 {
-                println!("Epic");
-                // Round up
-                new_mant += 1;
-
-                if new_mant >= (1 << (52 - mul_hi_cutoff)) { // Annoying overflow
-                    println!("Fuck");
-                    exp += 1;
-                    new_mant >>= 1;
-                }
-            }
-        }
-
-        dbg!(new_mant, exp);
-    } else {
-        // Truncation still occurs in the second 64-bit part :)
-        if (exp <= -1023) {
-            mul_lo_cutoff += -1023 - exp;
-        }
-
-        dbg!(mul_lo_cutoff);
-
-        if sign == 0 {
-            // Positive result, truncation will be done automatically
-        } else {
-            // Negative result, round up in magnitude if needed
-            let mask = generate_mask(mul_lo_cutoff); 
-            if mul_lo & mask != 0 {
-                // Rounding necessary, result is inexact
-                mul_lo &= !mask; // truncate
-                mul_lo = mul_lo.wrapping_add(1u64.checked_shl(mul_lo_cutoff as u32).unwrap_or(0)); // round up
-
-                if mul_lo == 0 { // overflow occurred
-                    mul_hi += 1;
-                }
-            }
-        }
-
-        new_mant = (mul_hi << (64 - mul_lo_cutoff)) + mul_lo.checked_shr(mul_lo_cutoff as u32).unwrap_or(0u64);
-    }
-
-    dbg!(new_mant);
-
-    // Compute new mantissa    
-
-    // Since we're rounding down, we check if sign is positive or negative. If sign is 0 (positive)
-    // then we truncate; if sign is 1 (negative) we round up if the second word
-    from_sign_exp_mant_f64(sign, exp, new_mant)
-
+    from_sign_exp_mant_f64(sign, exp + shift + 53, truncated)
 }
 
 /// Computes a rounded multiplication downward of two double-precision floating point numbers.
@@ -137,7 +195,7 @@ pub fn multiply_round_down(a: f64, b: f64) -> f64 {
     // full-precision 107-bit result
     let (sign, exp, mul_hi, mul_lo) = multiply_repr(a, b);
 
-    round_exact_repr_to_f64(sign, exp, mul_hi, mul_lo)
+    round_down_repr_to_f64(sign, exp, mul_hi, mul_lo)
 }
 
 #[cfg(test)]
